@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>วิดีโอ</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;-webkit-tap-highlight-color:transparent;font-family:system-ui,-apple-system,"Noto Sans Thai","Sarabun",sans-serif}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;color:#9aa0a6;cursor:pointer;background:#050505;z-index:2;transition:opacity .3s}
+  #play{width:84px;height:84px;border-radius:50%;border:2px solid rgba(255,255,255,.55);display:flex;align-items:center;justify-content:center}
+  #play i{display:block;margin-left:6px;border-style:solid;border-width:14px 0 14px 24px;border-color:transparent transparent transparent rgba(255,255,255,.75)}
+  #start span{font-size:14px;letter-spacing:.04em}
+  #end{position:fixed;left:0;right:0;bottom:0;padding:32px 20px calc(32px + env(safe-area-inset-bottom));display:none;flex-direction:column;align-items:center;gap:14px;background:linear-gradient(transparent,rgba(0,0,0,.92) 45%);z-index:3;color:#fff;text-align:center}
+  #end b{font-size:26px;font-weight:600}
+  #end button{font:inherit;color:#fff;background:transparent;border:1px solid rgba(255,255,255,.4);border-radius:999px;padding:10px 26px;cursor:pointer}
+  #end button:active{background:rgba(255,255,255,.12)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="start">
+  <div id="play"><i></i></div>
+  <span>แตะเพื่อเล่นวิดีโอ</span>
+</div>
+
+<div id="end">
+  <b>โดนหลอกแล้ว 😈</b>
+  <button id="again">เล่นอีกรอบ</button>
+</div>
+
+<script>
+(function(){
+  var cv=document.getElementById('c'), ctx=cv.getContext('2d');
+  var startEl=document.getElementById('start'), endEl=document.getElementById('end');
+  var W=0,H=0,dpr=1;
+  function resize(){
+    dpr=Math.min(window.devicePixelRatio||1,2);
+    W=window.innerWidth;H=window.innerHeight;
+    cv.width=Math.floor(W*dpr);cv.height=Math.floor(H*dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener('resize',resize);resize();
+
+  /* ---------- AUDIO (สังเคราะห์เอง ไม่ต้องโหลดไฟล์) ---------- */
+  var ac=null, master=null, droneNodes=null;
+  function initAudio(){
+    if(ac){ if(ac.state==='suspended') ac.resume(); return; }
+    var AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC) return;
+    ac=new AC();
+    master=ac.createGain(); master.gain.value=0.9;
+    var comp=ac.createDynamicsCompressor();
+    master.connect(comp); comp.connect(ac.destination);
+  }
+  function makeCurve(k){
+    var n=1024,c=new Float32Array(n);
+    for(var i=0;i<n;i++){var x=i*2/n-1;c[i]=(3+k)*x*20*(Math.PI/180)/(Math.PI+k*Math.abs(x));}
+    return c;
+  }
+  function startDrone(){
+    if(!ac) return;
+    var g=ac.createGain(); g.gain.value=0; g.connect(master);
+    g.gain.linearRampToValueAtTime(0.22,ac.currentTime+2.5);
+    var o1=ac.createOscillator(),o2=ac.createOscillator();
+    o1.type='sine';o1.frequency.value=47;
+    o2.type='sine';o2.frequency.value=50.5;
+    o1.connect(g);o2.connect(g);o1.start();o2.start();
+    droneNodes={g:g,os:[o1,o2]};
+  }
+  function stopDrone(){
+    if(!droneNodes||!ac) return;
+    var d=droneNodes; droneNodes=null;
+    d.g.gain.cancelScheduledValues(ac.currentTime);
+    d.g.gain.setValueAtTime(d.g.gain.value,ac.currentTime);
+    d.g.gain.linearRampToValueAtTime(0,ac.currentTime+0.1);
+    setTimeout(function(){d.os.forEach(function(o){try{o.stop()}catch(e){}})},250);
+  }
+  function scream(){
+    if(!ac) return;
+    var t=ac.currentTime, dur=2.6;
+    var ws=ac.createWaveShaper(); ws.curve=makeCurve(60); ws.oversample='2x';
+    var sg=ac.createGain(); sg.gain.value=0.5;
+    ws.connect(sg); sg.connect(master);
+    [700,1050,1400,2100].forEach(function(f,i){
+      var o=ac.createOscillator(); o.type='sawtooth';
+      o.frequency.setValueAtTime(f*0.8,t);
+      o.frequency.exponentialRampToValueAtTime(f*1.9,t+0.35);
+      o.frequency.exponentialRampToValueAtTime(f*1.3,t+dur);
+      var lfo=ac.createOscillator(); lfo.frequency.value=8+i*1.7;
+      var lg=ac.createGain(); lg.gain.value=f*0.06;
+      lfo.connect(lg); lg.connect(o.frequency);
+      var g=ac.createGain();
+      g.gain.setValueAtTime(0,t);
+      g.gain.linearRampToValueAtTime(0.32/(1+i*0.4),t+0.03);
+      g.gain.setValueAtTime(0.32/(1+i*0.4),t+dur*0.6);
+      g.gain.linearRampToValueAtTime(0,t+dur);
+      o.connect(g); g.connect(ws);
+      o.start(t); lfo.start(t); o.stop(t+dur+0.05); lfo.stop(t+dur+0.05);
+    });
+    // noise
+    var len=Math.floor(ac.sampleRate*dur), buf=ac.createBuffer(1,len,ac.sampleRate), d=buf.getChannelData(0);
+    for(var i=0;i<len;i++) d[i]=Math.random()*2-1;
+    var ns=ac.createBufferSource(); ns.buffer=buf;
+    var bp=ac.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=2600; bp.Q.value=0.7;
+    var ng=ac.createGain();
+    ng.gain.setValueAtTime(0.9,t); ng.gain.exponentialRampToValueAtTime(0.05,t+dur);
+    ns.connect(bp); bp.connect(ng); ng.connect(master); ns.start(t);
+    // thump
+    var th=ac.createOscillator(); th.type='sine';
+    th.frequency.setValueAtTime(90,t); th.frequency.exponentialRampToValueAtTime(28,t+0.5);
+    var tg=ac.createGain(); tg.gain.setValueAtTime(1,t); tg.gain.exponentialRampToValueAtTime(0.001,t+0.6);
+    th.connect(tg); tg.connect(master); th.start(t); th.stop(t+0.65);
+  }
+
+  /* ---------- GHOST DRAWING ---------- */
+  function drawGhost(cx,cy,s,t,jaw,alpha){
+    var u=Math.min(W,H)/100*s;
+    ctx.save();
+    ctx.globalAlpha=alpha;
+    ctx.translate(cx,cy);
+    ctx.rotate(Math.sin(t*7)*0.035);
+    ctx.translate(-cx,-cy);
+
+    // back hair
+    ctx.fillStyle='#030303';
+    ctx.beginPath();
+    ctx.moveTo(cx-48*u,cy-62*u);
+    ctx.lineTo(cx+48*u,cy-62*u);
+    for(var i=0;i<=10;i++){
+      var x=cx+48*u-(i/10)*96*u;
+      ctx.lineTo(x,H+10+Math.sin(t*2+i)*2*u);
+    }
+    ctx.closePath(); ctx.fill();
+
+    // face
+    var g=ctx.createRadialGradient(cx,cy-8*u,2*u,cx,cy,30*u);
+    g.addColorStop(0,'#e6e6dc'); g.addColorStop(0.7,'#b9bbb0'); g.addColorStop(1,'#6d7068');
+    ctx.fillStyle=g;
+    ctx.beginPath(); ctx.ellipse(cx,cy,19*u,26*u,0,0,Math.PI*2); ctx.fill();
+
+    // eye sockets
+    var ex=7.5*u, ey=cy-6*u;
+    [-1,1].forEach(function(sd){
+      var sh=ctx.createRadialGradient(cx+sd*ex,ey,u,cx+sd*ex,ey,9*u);
+      sh.addColorStop(0,'rgba(0,0,0,.9)'); sh.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=sh;
+      ctx.beginPath(); ctx.ellipse(cx+sd*ex,ey+u,9*u,10*u,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#000';
+      ctx.beginPath(); ctx.ellipse(cx+sd*ex,ey,4.3*u,5.8*u,sd*0.12,0,Math.PI*2); ctx.fill();
+      // tiny glowing pupil
+      ctx.fillStyle='rgba(255,255,255,.95)';
+      ctx.beginPath(); ctx.arc(cx+sd*ex+(Math.random()-0.5)*0.8*u,ey+(Math.random()-0.5)*0.8*u,0.7*u,0,Math.PI*2); ctx.fill();
+    });
+
+    // nose shadow
+    ctx.strokeStyle='rgba(40,40,35,.45)'; ctx.lineWidth=0.7*u; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(cx,cy-1*u); ctx.lineTo(cx-1.3*u,cy+6*u); ctx.lineTo(cx+0.5*u,cy+7*u); ctx.stroke();
+
+    // mouth
+    var my=cy+15*u, mh=(6+10*jaw)*u, mw=(5+2*jaw)*u;
+    ctx.fillStyle='#000';
+    ctx.beginPath(); ctx.ellipse(cx,my+mh*0.35,mw,mh,0,0,Math.PI*2); ctx.fill();
+    var mg=ctx.createLinearGradient(0,my,0,my+mh*1.6);
+    mg.addColorStop(0,'rgba(90,0,0,0)'); mg.addColorStop(1,'rgba(110,0,0,.7)');
+    ctx.fillStyle=mg;
+    ctx.beginPath(); ctx.ellipse(cx,my+mh*0.55,mw*0.7,mh*0.7,0,0,Math.PI*2); ctx.fill();
+
+    // hair curtains (หน้าผากและแก้ม)
+    ctx.fillStyle='#020202';
+    [-1,1].forEach(function(sd){
+      ctx.beginPath();
+      ctx.moveTo(cx+sd*50*u,cy-64*u);
+      ctx.lineTo(cx,cy-64*u);
+      ctx.bezierCurveTo(cx+sd*2*u,cy-36*u,cx+sd*16*u,cy-20*u,cx+sd*15*u,cy+6*u);
+      ctx.bezierCurveTo(cx+sd*14*u,cy+28*u,cx+sd*21*u,cy+50*u,cx+sd*(14+Math.sin(t*3)*1.5)*u,H+10);
+      ctx.lineTo(cx+sd*50*u,H+10);
+      ctx.closePath(); ctx.fill();
+    });
+    // เส้นผมบางเส้นหลุดมาที่หน้า
+    ctx.strokeStyle='rgba(0,0,0,.85)'; ctx.lineWidth=0.35*u;
+    for(var k=0;k<9;k++){
+      var sx=cx+(k-4)*3.2*u, sw=Math.sin(t*3+k)*1.2*u;
+      ctx.beginPath(); ctx.moveTo(sx,cy-27*u);
+      ctx.bezierCurveTo(sx+sw,cy-12*u,sx-sw,cy+4*u,sx+sw*1.5,cy+(10+(k%3)*5)*u);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function vignette(strength){
+    var v=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.25,W/2,H/2,Math.max(W,H)*0.75);
+    v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(0,0,0,'+strength+')');
+    ctx.fillStyle=v; ctx.fillRect(0,0,W,H);
+  }
+  function glitch(n){
+    ctx.save(); ctx.setTransform(1,0,0,1,0,0);
+    for(var i=0;i<n;i++){
+      var y=Math.floor(Math.random()*cv.height), h=8+Math.floor(Math.random()*50), dx=Math.floor((Math.random()-0.5)*60*dpr);
+      if(y+h>cv.height) h=cv.height-y;
+      if(h<=0) continue;
+      ctx.drawImage(cv,0,y,cv.width,h,dx,y,cv.width,h);
+    }
+    ctx.restore();
+  }
+  function eo(x){return 1-Math.pow(1-Math.min(Math.max(x,0),1),4);}
+
+  /* ---------- STATE ---------- */
+  var phase='idle', t0=0, scareStart=0, started=false;
+  var WAIT_MS=3000, END_MS=5200;
+
+  function begin(){
+    if(started) return; started=true;
+    initAudio(); startDrone();
+    try{ var el=document.documentElement; (el.requestFullscreen||el.webkitRequestFullscreen||function(){return Promise.resolve()}).call(el); }catch(e){}
+    startEl.style.opacity='0';
+    setTimeout(function(){startEl.style.display='none';},300);
+    phase='wait'; t0=performance.now();
+  }
+  function doScare(now){
+    phase='scare'; scareStart=now;
+    stopDrone(); scream();
+    try{ if(navigator.vibrate) navigator.vibrate([250,80,250,80,400]); }catch(e){}
+  }
+  function reset(){
+    endEl.style.display='none';
+    phase='wait'; t0=performance.now(); started=true;
+    initAudio(); startDrone();
+  }
+  startEl.addEventListener('click',begin);
+  startEl.addEventListener('touchend',function(e){e.preventDefault();begin();},{passive:false});
+  document.getElementById('again').addEventListener('click',reset);
+
+  function frame(now){
+    requestAnimationFrame(frame);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.globalAlpha=1;
+    ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+
+    if(phase==='wait'){
+      var el=now-t0;
+      if(el>1400){
+        var a=Math.random()<0.06?0.22:0.035;
+        drawGhost(W/2,H*0.5,0.35,el/1000,0.1,a);
+      }
+      vignette(0.8);
+      if(el>=WAIT_MS) doScare(now);
+    } else if(phase==='scare'||phase==='end'){
+      var t=(now-scareStart)/1000;
+      var s=t<0.18 ? 0.35+1.1*eo(t/0.18) : 1.45+(t-0.18)*0.06;
+      var jaw=0.5+0.5*Math.sin(t*28);
+      var shake=phase==='scare'?(t<1.2?10:4):2;
+      ctx.save();
+      ctx.translate((Math.random()-0.5)*shake,(Math.random()-0.5)*shake);
+      drawGhost(W/2,H*0.5,s,t,jaw,1);
+      ctx.restore();
+      vignette(0.85);
+      if(phase==='scare'){
+        if(Math.random()<0.5) glitch(3);
+        if(t<0.1){ ctx.fillStyle='rgba(255,255,255,.9)'; ctx.fillRect(0,0,W,H); }
+        else if(Math.random()<0.05){ ctx.fillStyle='rgba(255,255,255,.55)'; ctx.fillRect(0,0,W,H); }
+        else if(Math.random()<0.08){ ctx.fillStyle='rgba(160,0,0,.4)'; ctx.fillRect(0,0,W,H); }
+        if(now-scareStart>=END_MS){ phase='end'; endEl.style.display='flex'; }
+      }
+    }
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
